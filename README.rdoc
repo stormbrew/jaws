@@ -1,6 +1,24 @@
-= jaws
+= JAWS
 
-Description goes here.
+Just Another Web Server. Obviously there are already a few in the Ruby eco-system, so I'll just list the design goals:
+
+* Have a concurrency model that's predictable and easy to understand
+  It doesn't use EventMachine and uses a small and manageable thread pool to serve requests.
+  Specifically, it can handle a concurrency of N with N threads, but doesn't accept any connections
+  above that concurrency. This is so that it doesn't drop connections if it gets overloaded, nor
+  does it advertise a concurrency level (like 950) that in a practical web app is just impossible.
+* Have a pluggable listen/accept system
+  Things like Swiftiply and CloudBridge, which have unusual means of accepting incoming connections, 
+  currently monkey patch mongrel to enable their behaviour. This server allows you to override the
+  standard accept behaviour so these systems can work without fragile object surgery.
+* Be built for rack right from the start
+  This server talks rack and only rack. It doesn't expect to be used as a standalone server.
+* Be capable of being run in pure ruby, but provide better performance if possible
+  As things move forward, having a pure ruby implementation is important for enabling people
+  to work on and improve ruby software. This server uses the http_parser gem for http parsing,
+  which provides a first class implementation in ruby and (will eventually) support using a
+  C extension that conforms to the same interface, as set out by the specs in that gem,
+  so that it can achieve the same or better parsing performance as mongrel.
 
 == Note on Patches/Pull Requests
  

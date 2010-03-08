@@ -5,12 +5,14 @@ begin
   require 'jeweler'
   Jeweler::Tasks.new do |gem|
     gem.name = "jaws"
-    gem.summary = %Q{TODO: one-line summary of your gem}
-    gem.description = %Q{TODO: longer description of your gem}
+    gem.summary = %Q{Just Another Web Server}
+    gem.description = %Q{A Ruby web server designed to have a predictable and simple concurrency model, and to be capable of running in a pure-ruby environment.}
     gem.email = "megan@stormbrew.ca"
     gem.homepage = "http://github.com/stormbrew/jaws"
     gem.authors = ["Megan Batty"]
     gem.add_development_dependency "rspec", ">= 1.2.9"
+    gem.add_dependency "http_parser", ">= 0.1.0"
+    gem.add_dependency "rack", ">= 1.1.0"
     # gem is a Gem::Specification... see http://www.rubygems.org/read/chapter/20 for additional settings
   end
   Jeweler::GemcutterTasks.new
