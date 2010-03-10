@@ -10,8 +10,6 @@ module Jaws
     name.gsub(%r{(^|_)([a-z])}) { $2.upcase }
   end
   
-  class ReadTimeoutError < RuntimeError; end;
-  
   class Server
     DefaultOptions = {
       :Host => '0.0.0.0',
@@ -142,11 +140,22 @@ module Jaws
       
         # output the body
         if (body_len)        
-          # If the app set a content length, we just dump it out.
-          # TODO: make this not let output go longer or shorter
-          # than it's supposed to.
+          # If the app set a content length, we output that length
+          written = 0
           body.each do |chunk|
+            remain = body_len - written
+            if (chunk.size > remain)
+              chunk[remain, chunk.size] = ""
+            end
             client.write(chunk)
+            written += chunk.size
+            if (written >= body_len)
+              break
+            end
+          end
+          if (written < body_len)
+            $stderr.puts("Request gave Content-Length(#{body_len}) but gave less data(#{written}). Aborting connection.")
+            return
           end
         else
           # If the app didn't set a length, we do it chunked.
