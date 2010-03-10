@@ -60,7 +60,11 @@ module Jaws
     # client.
     def create_listener(options)
       l = TCPServer.new(@host, @port)
-      l.listen(@max_clients)
+      # let 10 requests back up for each request we can handle concurrently.
+      # note that this value is often truncated by the OS to numbers like 128
+      # or even 5. You may be able to raise this maximum using sysctl (on BSD/OSX)
+      # or /proc/sys/net/core/somaxconn on linux 2.6.
+      l.listen(@max_clients * 10)
       return l
     end
     protected :create_listener
@@ -118,12 +122,57 @@ module Jaws
       
       # call the app
       begin
-        puts('before' + app.to_s)
         status, headers, body = app.call(rack_env)
-        puts('after')
+
+        # headers
+        response = "HTTP/1.1 #{status} \r\n"
+        headers.each do |key, vals|
+          vals.each_line do |val|
+            response << "#{key}: #{val}\r\n"
+          end
+        end
+        # TODO: This should not use content-length it transfer-encoding is set.
+        body_len = headers["Content-Length"] && headers["Content-Length"].to_i
+        if (!body_len && !headers["Transfer-Encoding"])
+          response << "Transfer-Encoding: chunked\r\n"
+        end
+        response << "\r\n"
+      
+        client.write(response)
+      
+        # output the body
+        if (body_len)        
+          # If the app set a content length, we just dump it out.
+          # TODO: make this not let output go longer or shorter
+          # than it's supposed to.
+          body.each do |chunk|
+            client.write(chunk)
+          end
+        else
+          # If the app didn't set a length, we do it chunked.
+          body.each do |chunk|
+            client.write(chunk.size.to_s + "\r\n")
+            client.write(chunk)
+            client.write("\r\n")
+          end
+          client.write("\r\n")
+        end
+      
+        # if the conditions are right, close the connection
+        if ((req.headers["CONNECTION"] && req.headers["CONNECTION"] =~ /close/) ||
+            (headers["Connection"] && headers["Connection"] =~ /close/) ||
+            (req.version == [1,0]))
+          client.close_write
+        end
+      rescue Errno::EPIPE
+        raise # pass the buck up.
       rescue Object => e
         err_str = "<h2>500 Internal Server Error</h2>"
         err_str << "<p>#{e}</p>"
+        err_str << "<ul>\n"
+        e.backtrace.each do |line|
+          err_str << "<li>" << line << "</li>\n"
+        end
         client.write("HTTP/1.1 500 Internal Server Error\r\n")
         client.write("Connection: close\r\n")
         client.write("Content-Length: #{err_str.length}\r\n")
@@ -132,46 +181,9 @@ module Jaws
         client.write(err_str)
         client.close_write
         return
+      ensure
+        body.close if (body.respond_to? :close)
       end
-      
-      # headers
-      client.write("HTTP/1.1 #{status} Blah\r\n")
-      headers.each do |key, vals|
-        vals.each_line do |val|
-          client.write("#{key}: #{val}\r\n")
-        end
-      end
-      # TODO: This should not use content-length it transfer-encoding is set.
-      body_len = headers["Content-Length"] && headers["Content-Length"].to_i
-      if (!body_len && !headers["Transfer-Encoding"])
-        client.write("Transfer-Encoding: chunked\r\n")
-      end
-      client.write("\r\n")
-      
-      # output the body
-      if (body_len)        
-        # If the app set a content length, we just dump it out.
-        # TODO: make this not let output go longer or shorter
-        # than it's supposed to.
-        body.each do |chunk|
-          client.write(chunk)
-        end
-      else
-        # If the app didn't set a length, we do it chunked.
-        body.each do |chunk|
-          client.write(chunk.size.to_s + "\r\n")
-          client.write(chunk)
-          client.write("\r\n")
-        end
-        client.write("\r\n")
-      end
-      
-      # if the conditions are right, close the connection
-      if ((req.headers["CONNECTION"] && req.headers["CONNECTION"] =~ /close/) ||
-          (headers["Connection"] && headers["Connection"] =~ /close/) ||
-          (req.version == [1,0]))
-        client.close_write
-      end        
     end
     private :process_request
     
@@ -197,26 +209,35 @@ module Jaws
         rescue Http::ParserError => e
           puts("Parse error #{e.code}")
         rescue Errno::EPIPE
-          raise# do nothing.
+          # do nothing, just let the connection close.
         rescue Object => e
-          puts("Unhandled error #{e}")
+          $stderr.puts("Unhandled error #{e}:")
+          e.backtrace.each do |line|
+            $stderr.puts(line)
+          end
         ensure
-          client.close if (!client.closed?)
+          client.close if (client && !client.closed?)
         end
       end
     end
     private :process_client
     
     def run(app)
-      master = Thread.current
-      master[:workers] = (0...@max_clients).collect do
-        Thread.new do
-          process_client(app)
+      if (@max_clients > 1)
+        master = Thread.current
+        master[:workers] = (0...@max_clients).collect do
+          Thread.new do
+            process_client(app)
+          end
         end
-      end
-      master[:workers].each do |worker|
-        worker.join
-      end
+        master[:workers].each do |worker|
+          worker.join
+        end
+      else
+        master = Thread.current
+        master[:workers] = [Thread.current]
+        process_client(app)
+      end      
     end
     
     def shutdown()
