@@ -11,7 +11,7 @@ begin
     gem.homepage = "http://github.com/stormbrew/jaws"
     gem.authors = ["Megan Batty"]
     gem.add_development_dependency "rspec", ">= 1.2.9"
-    gem.add_dependency "http_parser", ">= 0.1.0"
+    gem.add_dependency "http_parser", ">= 0.1.1"
     gem.add_dependency "rack", ">= 1.1.0"
     # gem is a Gem::Specification... see http://www.rubygems.org/read/chapter/20 for additional settings
   end
