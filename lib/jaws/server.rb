@@ -124,15 +124,20 @@ module Jaws
 
         # headers
         response = "HTTP/1.1 #{status} \r\n"
+
+        if (!headers["Transfer-Encoding"] || headers["Transfer-Encoding"] == "identity")
+          body_len = headers["Content-Length"] && headers["Content-Length"].to_i
+          if (!body_len)
+            headers["Transfer-Encoding"] = "chunked"
+          end
+        else
+          headers.delete("Content-Length")
+        end
+
         headers.each do |key, vals|
           vals.each_line do |val|
             response << "#{key}: #{val}\r\n"
           end
-        end
-        # TODO: This should not use content-length it transfer-encoding is set.
-        body_len = headers["Content-Length"] && headers["Content-Length"].to_i
-        if (!body_len && !headers["Transfer-Encoding"])
-          response << "Transfer-Encoding: chunked\r\n"
         end
         response << "\r\n"
       
@@ -160,10 +165,11 @@ module Jaws
         else
           # If the app didn't set a length, we do it chunked.
           body.each do |chunk|
-            client.write(chunk.size.to_s + "\r\n")
+            client.write(chunk.size.to_s(16) + "\r\n")
             client.write(chunk)
             client.write("\r\n")
           end
+          client.write("0\r\n")
           client.write("\r\n")
         end
       
