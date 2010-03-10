@@ -19,6 +19,20 @@ module Jaws
       :ReadTimeout => 2,
     }
     
+    # The default values for most of the rack environment variables
+    DefaultRackEnv = {
+      "rack.version" => [1,1],
+      "rack.url_scheme" => "http",
+      "rack.input" => StringIO.new,
+      "rack.errors" => $stderr,
+      "rack.multithread" => true,
+      "rack.multiprocess" => false,
+      "rack.run_once" => false,
+      "SCRIPT_NAME" => "",
+      "PATH_INFO" => "",
+      "QUERY_STRING" => "",
+    }
+    
     # The host to listen on when run(app) is called. Also set with options[:Host]
     attr_accessor :host
     # The port to listen on when run(app) is called. Also set with options[:Port]
@@ -95,24 +109,9 @@ module Jaws
     private :read_timeout
     
     def process_request(client, req, app)
-      # Build the rack environment (should probably roll this into http_parser)
-      rack_env = {}
-      rack_env["rack.version"] = [1,1]
-      rack_env["rack.url_scheme"] = "http"
-      rack_env["rack.input"] = req.body || StringIO.new
-      rack_env["rack.errors"] = $stderr
-      rack_env["rack.multithread"] = true
-      rack_env["rack.multiprocess"] = false
-      rack_env["rack.run_once"] = false
-      rack_env["REQUEST_METHOD"] = req.method
-      rack_env["SCRIPT_NAME"] = ""
-      rack_env["PATH_INFO"], rack_env["QUERY_STRING"] = req.path.split("?", 1)
-      rack_env["QUERY_STRING"] ||= ""
-      rack_env["SERVER_NAME"], rack_env["SERVER_PORT"] = req.headers["HOST"].split(":", 1)
+      rack_env = DefaultRackEnv.dup
+      req.fill_rack_env(rack_env)
       rack_env["SERVER_PORT"] ||= @port.to_s
-      req.headers.each do |key,val|
-        rack_env["HTTP_#{key}"] = val
-      end
       
       if (rack_env["rack.input"].respond_to? :set_encoding)
         rack_env["rack.input"].set_encoding "ASCII-8BIT"
