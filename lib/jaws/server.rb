@@ -90,6 +90,25 @@ module Jaws
     end
     protected :create_listener
     
+    # Builds an env object from the information provided. Derived handlers
+    # can override this to provide additional information.
+    def build_env(client, req)
+      rack_env = DefaultRackEnv.dup
+      req.fill_rack_env(rack_env)
+      rack_env["SERVER_PORT"] ||= @port.to_s
+      
+      if (rack_env["rack.input"].respond_to? :set_encoding)
+        rack_env["rack.input"].set_encoding "ASCII-8BIT"
+      end
+      
+      rack_env["jaws.handler"] = self
+      rack_env["REMOTE_PORT"], rack_env["REMOTE_ADDR"] = Socket::unpack_sockaddr_in(client.getpeername)
+      rack_env["REMOTE_PORT"] &&= rack_env["REMOTE_PORT"].to_s
+      
+      return rack_env      
+    end
+    protected :build_env
+    
     # Reads from a connection, yielding chunks of data as it goes,
     # until the connection closes. Once the connection closes, it returns.
     def chunked_read(io, timeout)
@@ -118,17 +137,7 @@ module Jaws
     private :read_timeout
     
     def process_request(client, req, app)
-      rack_env = DefaultRackEnv.dup
-      req.fill_rack_env(rack_env)
-      rack_env["SERVER_PORT"] ||= @port.to_s
-      
-      if (rack_env["rack.input"].respond_to? :set_encoding)
-        rack_env["rack.input"].set_encoding "ASCII-8BIT"
-      end
-      
-      rack_env["jaws.handler"] = self
-      rack_env["REMOTE_PORT"], rack_env["REMOTE_ADDR"] = Socket::unpack_sockaddr_in(client.getpeername)
-      rack_env["REMOTE_PORT"] &&= rack_env["REMOTE_PORT"].to_s
+      rack_env = build_env(client, req)
       
       # call the app
       begin
