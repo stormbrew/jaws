@@ -101,7 +101,6 @@ module Jaws
         rack_env["rack.input"].set_encoding "ASCII-8BIT"
       end
       
-      rack_env["jaws.handler"] = self
       rack_env["REMOTE_PORT"], rack_env["REMOTE_ADDR"] = Socket::unpack_sockaddr_in(client.getpeername)
       rack_env["REMOTE_PORT"] &&= rack_env["REMOTE_PORT"].to_s
       
@@ -249,6 +248,9 @@ module Jaws
               if (req.done?)
                 process_request(client, req, app)
                 req = Http::Parser.new()
+                if (@listener.closed?)
+                  return # ignore any more requests from this client if we're shutting down.
+                end
               end
             rescue Http::ParserError => e
               err_str = "<h2>#{e.code} #{e.message}</h2>"
