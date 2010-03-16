@@ -58,18 +58,21 @@ module Jaws
     
     # Initializes a new Jaws server object. Pass it a hash of options (:Host, :Port, :MaxClients, and :SystemCores valid)
     def initialize(options = DefaultOptions)
-      options = DefaultOptions.merge(options)
+      @options = DefaultOptions.merge(options)
       self.class::DefaultOptions.each do |k,v|
-        send(:"#{Jaws.decapse_name(k.to_s)}=", options[k])
+        send(:"#{Jaws.decapse_name(k.to_s)}=", @options[k])
       end
-      @listener = create_listener(options)
-      @listener.extend Mutex_m # lock around use of the listener object.
+      self.extend Mutex_m
     end
     
     # You can re-implement this in a derived class in order to use a different
     # mechanism to listen for connections. It should return
     # an object that responds to accept() by returning an open connection to a
-    # client.
+    # client. It also has to respond to synchronize and yield to the block
+    # given to that method and be thread safe in that block. It must also
+    # respond to close() by immediately terminating any waiting accept() calls
+    # and responding to closed? with true thereafter. Close may be called
+    # from outside the object's synchronize block.
     def create_listener(options)
       l = TCPServer.new(@host, @port)
       # let 10 requests back up for each request we can handle concurrently.
@@ -77,6 +80,7 @@ module Jaws
       # or even 5. You may be able to raise this maximum using sysctl (on BSD/OSX)
       # or /proc/sys/net/core/somaxconn on linux 2.6.
       l.listen(@max_clients * 10)
+      l.extend Mutex_m # lock around use of the listener object.
       return l
     end
     protected :create_listener
@@ -116,6 +120,8 @@ module Jaws
       if (rack_env["rack.input"].respond_to? :set_encoding)
         rack_env["rack.input"].set_encoding "ASCII-8BIT"
       end
+      
+      rack_env["jaws.server"] = self
       
       # call the app
       begin
@@ -182,11 +188,7 @@ module Jaws
         raise # pass the buck up.
       rescue Object => e
         err_str = "<h2>500 Internal Server Error</h2>"
-        err_str << "<p>#{e}</p>"
-        err_str << "<ul>\n"
-        e.backtrace.each do |line|
-          err_str << "<li>" << line << "</li>\n"
-        end
+        err_str << "<p>#{e}: #{e.backtrace.first}</p>"
         client.write("HTTP/1.1 500 Internal Server Error\r\n")
         client.write("Connection: close\r\n")
         client.write("Content-Length: #{err_str.length}\r\n")
@@ -207,22 +209,38 @@ module Jaws
       loop do
         begin
           client = @listener.synchronize do
-            @listener.accept()
+            begin
+              @listener && @listener.accept()
+            rescue => e
+              return # this means we've been turned off, so exit the loop.
+            end
+          end
+          if (!client)
+            return # nil return means we're quitting, exit loop.
           end
           
           req = Http::Parser.new()
           buf = ""
           chunked_read(client, @timeout) do |data|
-            buf << data
-            req.parse!(buf)
-            if (req.done?)
-              process_request(client, req, app)
-              req = Http::Parser.new()
+            begin
+              buf << data
+              req.parse!(buf)
+              if (req.done?)
+                process_request(client, req, app)
+                req = Http::Parser.new()
+              end
+            rescue Http::ParserError => e
+              err_str = "<h2>#{e.code} #{e.message}</h2>"
+              client.write("HTTP/1.1 #{e.code} #{e.message}\r\n")
+              client.write("Connection: close\r\n")
+              client.write("Content-Length: #{err_str.length}\r\n")
+              client.write("Content-Type: text/html\r\n")
+              client.write("\r\n")
+              client.write(err_str)
+              client.close_write            
             end
           end
-        rescue Http::ParserError => e
-          puts("Parse error #{e.code}")
-        rescue Errno::EPIPE
+       rescue Errno::EPIPE
           # do nothing, just let the connection close.
         rescue Object => e
           $stderr.puts("Unhandled error #{e}:")
@@ -236,26 +254,47 @@ module Jaws
     end
     private :process_client
     
+    # Runs the application through the configured handler.
+    # Can only be run once at a time. If you try to run it more than
+    # once, the second run will block until the first finishes.
     def run(app)
-      if (@max_clients > 1)
-        master = Thread.current
-        master[:workers] = (0...@max_clients).collect do
-          Thread.new do
+      synchronize do
+        begin
+          @listener = create_listener(@options)
+          if (@max_clients > 1)
+            @master = Thread.current
+            @workers = (0...@max_clients).collect do
+              Thread.new do
+                process_client(app)
+              end
+            end
+            @workers.each do |worker|
+              worker.join
+            end
+          else
+            @master = Thread.current
+            @workers = [Thread.current]
             process_client(app)
-          end
+          end      
+        ensure
+          @listener.close if (@listener && !@listener.closed?)
+          @listener = @master = @workers = nil
         end
-        master[:workers].each do |worker|
-          worker.join
-        end
-      else
-        master = Thread.current
-        master[:workers] = [Thread.current]
-        process_client(app)
-      end      
+      end
     end
     
-    def shutdown()
-      
+    def stop()
+      # close the connection, the handler threads will exit
+      # the next time they try to load.
+      # TODO: Make it force them to exit after a timeout.
+      @listener.close if !@listener.closed?
+    end
+    
+    def running?
+      !@workers.nil?
+    end
+    def stopped?
+      @workers.nil?
     end
   end
 end
