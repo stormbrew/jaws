@@ -1,3 +1,4 @@
+require 'rack/utils'
 require 'http/parser'
 require 'mutex_m'
 require 'socket'
@@ -33,6 +34,9 @@ module Jaws
       "QUERY_STRING" => "",
       "SERVER_SOFTWARE" => "Rack+Jaws",
     }
+    
+    StatusStrings = Rack::Utils::HTTP_STATUS_CODES
+    CodesWithoutBody = Rack::Utils::STATUS_WITH_NO_ENTITY_BODY
     
     # The host to listen on when run(app) is called. Also set with options[:Host]
     attr_accessor :host
@@ -131,7 +135,9 @@ module Jaws
         status, headers, body = app.call(rack_env)
 
         # headers
-        response = "HTTP/1.1 #{status} \r\n"
+        match = %r{^([0-9]{3,3})( +([[:graph:] ]+))?}.match(status.to_s)
+        code = match[1].to_i
+        response = "HTTP/1.1 #{match[1]} #{match[3] || StatusStrings[code] || "Unknown"}\r\n"
 
         if (!headers["Transfer-Encoding"] || headers["Transfer-Encoding"] == "identity")
           body_len = headers["Content-Length"] && headers["Content-Length"].to_i
@@ -150,35 +156,38 @@ module Jaws
         response << "\r\n"
       
         client.write(response)
-      
-        # output the body
-        if (body_len)        
-          # If the app set a content length, we output that length
-          written = 0
-          body.each do |chunk|
-            remain = body_len - written
-            if (chunk.size > remain)
-              chunk[remain, chunk.size] = ""
+
+        # only output a body if the request wants one and the status code
+        # should have one.
+        if (req.method != "HEAD" && !CodesWithoutBody.include?(code))
+          if (body_len)        
+            # If the app set a content length, we output that length
+            written = 0
+            body.each do |chunk|
+              remain = body_len - written
+              if (chunk.size > remain)
+                chunk[remain, chunk.size] = ""
+              end
+              client.write(chunk)
+              written += chunk.size
+              if (written >= body_len)
+                break
+              end
             end
-            client.write(chunk)
-            written += chunk.size
-            if (written >= body_len)
-              break
+            if (written < body_len)
+              $stderr.puts("Request gave Content-Length(#{body_len}) but gave less data(#{written}). Aborting connection.")
+              return
             end
-          end
-          if (written < body_len)
-            $stderr.puts("Request gave Content-Length(#{body_len}) but gave less data(#{written}). Aborting connection.")
-            return
-          end
-        else
-          # If the app didn't set a length, we do it chunked.
-          body.each do |chunk|
-            client.write(chunk.size.to_s(16) + "\r\n")
-            client.write(chunk)
+          else
+            # If the app didn't set a length, we do it chunked.
+            body.each do |chunk|
+              client.write(chunk.size.to_s(16) + "\r\n")
+              client.write(chunk)
+              client.write("\r\n")
+            end
+            client.write("0\r\n")
             client.write("\r\n")
           end
-          client.write("0\r\n")
-          client.write("\r\n")
         end
       
         # if the conditions are right, close the connection
