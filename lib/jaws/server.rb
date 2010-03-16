@@ -31,6 +31,7 @@ module Jaws
       "SCRIPT_NAME" => "",
       "PATH_INFO" => "",
       "QUERY_STRING" => "",
+      "SERVER_SOFTWARE" => "Rack+Jaws",
     }
     
     # The host to listen on when run(app) is called. Also set with options[:Host]
@@ -121,7 +122,9 @@ module Jaws
         rack_env["rack.input"].set_encoding "ASCII-8BIT"
       end
       
-      rack_env["jaws.server"] = self
+      rack_env["jaws.handler"] = self
+      rack_env["REMOTE_PORT"], rack_env["REMOTE_ADDR"] = Socket::unpack_sockaddr_in(client.getpeername)
+      rack_env["REMOTE_PORT"] &&= rack_env["REMOTE_PORT"].to_s
       
       # call the app
       begin
