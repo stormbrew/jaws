@@ -64,7 +64,7 @@ module Jaws
     # Initializes a new Jaws server object. Pass it a hash of options (:Host, :Port, :MaxClients, and :SystemCores valid)
     def initialize(options = DefaultOptions)
       @options = DefaultOptions.merge(options)
-      self.class::DefaultOptions.each do |k,v|
+      DefaultOptions.each do |k,v|
         send(:"#{Jaws.decapse_name(k.to_s)}=", @options[k])
       end
       self.extend Mutex_m
