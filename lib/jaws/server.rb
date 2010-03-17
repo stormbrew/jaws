@@ -11,6 +11,7 @@ module Jaws
     name.gsub(%r{(^|_)([a-z])}) { $2.upcase }
   end
   
+  class GracefulExit < RuntimeError; end
   class Server
     DefaultOptions = {
       :Host => '0.0.0.0',
@@ -75,9 +76,10 @@ module Jaws
     # an object that responds to accept() by returning an open connection to a
     # client. It also has to respond to synchronize and yield to the block
     # given to that method and be thread safe in that block. It must also
-    # respond to close() by immediately terminating any waiting accept() calls
-    # and responding to closed? with true thereafter. Close may be called
-    # from outside the object's synchronize block.
+    # respond to close() by refusing to accept any further connections and
+    # returning true from closed?() thereafter. The accept() call may be interrupted
+    # by a GracefulExit error, it should not block or do anything special with this
+    # error.
     def create_listener(options)
       l = TCPServer.new(@host, @port)
       # let 10 requests back up for each request we can handle concurrently.
@@ -249,16 +251,19 @@ module Jaws
     # the connection closes. 
     def process_client(app)
       loop do
+        client = nil
         begin
-          client = @listener.synchronize do
-            begin
-              @listener && @listener.accept()
-            rescue => e
-              return # this means we've been turned off, so exit the loop.
+          make_interruptable do
+            client = @listener.synchronize do
+              begin
+                @listener && @listener.accept()
+              rescue => e
+                return # this means we've been turned off, so exit the loop.
+              end
             end
-          end
-          if (!client)
-            return # nil return means we're quitting, exit loop.
+            if (!client)
+              return # nil return means we're quitting, exit loop.
+            end
           end
           
           req = Http::Parser.new()
@@ -285,8 +290,10 @@ module Jaws
               client.close_write            
             end
           end
-       rescue Errno::EPIPE
+        rescue Errno::EPIPE
           # do nothing, just let the connection close.
+        rescue SystemExit, GracefulExit
+          raise # pass it on.  
         rescue Object => e
           $stderr.puts("Unhandled error #{e}:")
           e.backtrace.each do |line|
@@ -299,31 +306,69 @@ module Jaws
     end
     private :process_client
     
+    # Sets the current thread as interruptable. This happens around
+    # the listen part of the thread. This means the thread is receptive
+    # to t.raise.
+    def make_interruptable
+      begin
+        @interruptable.synchronize do
+          @interruptable << Thread.current
+        end
+        yield
+      ensure
+        @interruptable.synchronize do
+          @interruptable.delete(Thread.current)
+        end
+      end
+    end   
+    
     # Runs the application through the configured handler.
     # Can only be run once at a time. If you try to run it more than
     # once, the second run will block until the first finishes.
     def run(app)
       synchronize do
+        @interruptable = []
+        int_orig = trap "INT" do
+          stop()
+        end
+        term_orig = trap "TERM" do
+          stop()
+        end
         begin
           @listener = create_listener(@options)
+          @interruptable.extend Mutex_m
           if (@max_clients > 1)
             @master = Thread.current
             @workers = (0...@max_clients).collect do
               Thread.new do
-                process_client(app)
+                begin
+                  process_client(app)
+                rescue GracefulExit, SystemExit => e
+                  # let it exit.
+                rescue => e
+                  $stderr.puts("Handler thread unexpectedly died with #{e}:", e.backtrace)
+                end
               end
             end
             @workers.each do |worker|
               worker.join
             end
           else
-            @master = Thread.current
-            @workers = [Thread.current]
-            process_client(app)
+            begin
+              @master = Thread.current
+              @workers = [Thread.current]
+              process_client(app)
+            rescue GracefulExit, SystemExit => e
+              # let it exit
+            rescue => e
+              $stderr.puts("Handler thread unexpectedly died with #{e}:", e.backtrace)
+            end
           end      
         ensure
+          trap "INT", int_orig
+          trap "TERM", term_orig
           @listener.close if (@listener && !@listener.closed?)
-          @listener = @master = @workers = nil
+          @interruptable = @listener = @master = @workers = nil
         end
       end
     end
@@ -332,7 +377,15 @@ module Jaws
       # close the connection, the handler threads will exit
       # the next time they try to load.
       # TODO: Make it force them to exit after a timeout.
-      @listener.close if !@listener.closed?
+      $stderr.puts("Terminating request threads. To force immediate exit, send sigkill.")
+      @interruptable.synchronize do
+        @listener.close if !@listener.closed?
+        @workers.each do |worker|
+          if (@interruptable.include?(worker))
+            worker.raise GracefulExit, "Exiting"
+          end
+        end
+      end
     end
     
     def running?
