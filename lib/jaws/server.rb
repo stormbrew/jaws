@@ -103,6 +103,7 @@ module Jaws
       
       rack_env["REMOTE_PORT"], rack_env["REMOTE_ADDR"] = Socket::unpack_sockaddr_in(client.getpeername)
       rack_env["REMOTE_PORT"] &&= rack_env["REMOTE_PORT"].to_s
+      rack_env["SERVER_PROTOCOL"] = "HTTP/" << req.version.join('.')
       
       return rack_env      
     end
