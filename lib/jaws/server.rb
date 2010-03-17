@@ -156,6 +156,14 @@ module Jaws
         else
           headers.delete("Content-Length")
         end
+        
+        if (req.version[0] <= 1 && req.version[1] < 1) #old http versions
+          if (!body_len) # with no pre-defined length
+            headers.delete("Transfer-Encoding")
+            headers["Connection"] = "close"
+            # become connection-close with a transfer-encoding of identity
+          end
+        end
 
         headers.each do |key, vals|
           vals.each_line do |val|
@@ -165,6 +173,13 @@ module Jaws
         response << "\r\n"
       
         client.write(response)
+        
+        connection_should_close = false
+        if ((req.headers["CONNECTION"] && req.headers["CONNECTION"] =~ /close/) ||
+            (headers["Connection"] && headers["Connection"] =~ /close/) ||
+            (req.version == [1,0] && req.headers["CONNECTION"] !~ /keep-alive/))
+          connection_should_close = true
+        end
 
         # only output a body if the request wants one and the status code
         # should have one.
@@ -188,21 +203,27 @@ module Jaws
               return
             end
           else
-            # If the app didn't set a length, we do it chunked.
-            body.each do |chunk|
-              client.write(chunk.size.to_s(16) + "\r\n")
-              client.write(chunk)
+            # If the app didn't set a length, we need to send the data
+            # in a way the client will understand. That means, for http<1.1
+            # we close the connection. For http>1.0 we do chunked.
+            if (connection_should_close && headers["Content-Encoding"] != 'chunked')
+              body.each do |chunk|
+                client.write(chunk)
+              end
+            else
+              body.each do |chunk|
+                client.write(chunk.size.to_s(16) + "\r\n")
+                client.write(chunk)
+                client.write("\r\n")
+              end
+              client.write("0\r\n")
               client.write("\r\n")
             end
-            client.write("0\r\n")
-            client.write("\r\n")
           end
         end
       
         # if the conditions are right, close the connection
-        if ((req.headers["CONNECTION"] && req.headers["CONNECTION"] =~ /close/) ||
-            (headers["Connection"] && headers["Connection"] =~ /close/) ||
-            (req.version == [1,0]))
+        if (connection_should_close)
           client.close_write
         end
       rescue Errno::EPIPE
